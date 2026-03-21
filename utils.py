@@ -146,7 +146,7 @@ class NDCG(_Metric):
         is_hit = get_is_hit(scores, ground_truth, self.topk)
         num_pos = ground_truth.sum(dim=1).clamp(0, self.topk).to(torch.long)
         dcg = self.DCG(is_hit, device)
-        idcg = self.IDCGs[num_pos]
+        idcg = self.IDCGs[num_pos.cpu()]
         ndcg = dcg / idcg.to(device)
         self._cnt += scores.shape[0] - (num_pos == 0).sum().item()
         self._sum += ndcg.sum().item()
