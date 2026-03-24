@@ -21,6 +21,11 @@ def parse_args():
     parser.add_argument("--dp", type=float, default=0.2, help="the dropout rate")
     parser.add_argument("--alpha", type=int, default=8, help="alpha in UIBloss")
     parser.add_argument("--l2_norm", type=float, default=0.1, help="l2 norm")
+    parser.add_argument("--model_type", type=str, default="ubi_graph", help="model type: [UHBR, ubi_graph]")
+    parser.add_argument("--lambda0", type=float, default=0.5, help="shallow fusion weight 0")
+    parser.add_argument("--lambda1", type=float, default=0.5, help="shallow fusion weight 1")
+    parser.add_argument("--alpha_refine", type=float, default=1.0, help="UB refinement self weight")
+    parser.add_argument("--beta_refine", type=float, default=0.5, help="UB refinement neigh weight")
     return parser.parse_args()
 
 
@@ -115,7 +120,16 @@ def main():
     ]
     loss_func = UIBLoss(alpha=args.alpha)
     graph = [ui_graph, bi_graph, ub_graph]
-    model = UHBR(graph, device, args.dp, args.l2_norm).to(device)
+    
+    if args.model_type == "ubi_graph":
+        model = UBIGraph(
+            graph, device, args.dp, args.l2_norm, 
+            args.lambda0, args.lambda1,
+            args.alpha_refine, args.beta_refine
+        ).to(device)
+    else:
+        model = UHBR(graph, device, args.dp, args.l2_norm).to(device)
+        
     print("num parameters")
     print(sum(p.numel() for p in model.parameters()))
     # op
