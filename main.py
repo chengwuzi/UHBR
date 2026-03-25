@@ -100,8 +100,10 @@ def print_summary(history):
     
     avg_recall20 = sum(x["recall20"] for x in top_epochs) / top_k
     avg_recall40 = sum(x["recall40"] for x in top_epochs) / top_k
+    avg_recall80 = sum(x["recall80"] for x in top_epochs) / top_k
     avg_ndcg20 = sum(x["ndcg20"] for x in top_epochs) / top_k
     avg_ndcg40 = sum(x["ndcg40"] for x in top_epochs) / top_k
+    avg_ndcg80 = sum(x["ndcg80"] for x in top_epochs) / top_k
     avg_score = sum(x["score"] for x in top_epochs) / top_k
 
     print("\n" + "="*50)
@@ -112,19 +114,23 @@ def print_summary(history):
     print(f"Epoch: {best_epoch['epoch']}")
     print(f"Recall@20: {best_epoch['recall20']:.6f}")
     print(f"Recall@40: {best_epoch['recall40']:.6f}")
+    print(f"Recall@80: {best_epoch['recall80']:.6f}")
     print(f"NDCG@20:   {best_epoch['ndcg20']:.6f}")
     print(f"NDCG@40:   {best_epoch['ndcg40']:.6f}")
+    print(f"NDCG@80:   {best_epoch['ndcg80']:.6f}")
     print(f"Score:     {best_epoch['score']:.6f}")
     
     print(f"\n[Top-{top_k} Epochs]")
     for i, res in enumerate(top_epochs, 1):
-        print(f"Rank {i} -> Epoch: {res['epoch']:03d} | R@20: {res['recall20']:.6f} | R@40: {res['recall40']:.6f} | N@20: {res['ndcg20']:.6f} | N@40: {res['ndcg40']:.6f} | Score: {res['score']:.6f}")
+        print(f"Rank {i} -> Epoch: {res['epoch']:03d} | R@20: {res['recall20']:.6f} | R@40: {res['recall40']:.6f} | R@80: {res['recall80']:.6f} | N@20: {res['ndcg20']:.6f} | N@40: {res['ndcg40']:.6f} | N@80: {res['ndcg80']:.6f} | Score: {res['score']:.6f}")
         
     print(f"\n[Top-{top_k} Average]")
     print(f"Avg Recall@20: {avg_recall20:.6f}")
     print(f"Avg Recall@40: {avg_recall40:.6f}")
+    print(f"Avg Recall@80: {avg_recall80:.6f}")
     print(f"Avg NDCG@20:   {avg_ndcg20:.6f}")
     print(f"Avg NDCG@40:   {avg_ndcg40:.6f}")
+    print(f"Avg NDCG@80:   {avg_ndcg80:.6f}")
     print(f"Avg Score:     {avg_score:.6f}")
     print("="*50 + "\n")
 
@@ -197,6 +203,8 @@ def main():
         ndcg20 = float(test_metrics[1].metric)
         recall40 = float(test_metrics[2].metric)
         ndcg40 = float(test_metrics[3].metric)
+        recall80 = float(test_metrics[4].metric)
+        ndcg80 = float(test_metrics[5].metric)
         
         score = recall20 + ndcg20
         
@@ -204,8 +212,10 @@ def main():
             "epoch": epoch + 1,
             "recall20": recall20,
             "recall40": recall40,
+            "recall80": recall80,
             "ndcg20": ndcg20,
             "ndcg40": ndcg40,
+            "ndcg80": ndcg80,
             "score": score
         })
         

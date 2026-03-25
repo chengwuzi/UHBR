@@ -2,12 +2,11 @@
 UHBR
 
 Recall@20:0.3040
-NDCG@20:0.1821
-
 Recall@40:0.4166
-NDCG@40:0.2122
-
 Recall@80:0.5308
+
+NDCG@20:0.1821
+NDCG@40:0.2122
 NDCG@80:0.2383
 
 
@@ -16,7 +15,7 @@ NDCG@80:0.2383
 
 第一阶段
 
-
+"--lr 5e-3 --epochs 100 --dp 0.2 --alpha 8 --l2_norm 0.1 --lambda0 0.5 --lambda1 0.5 --alpha_refine 1.0 --beta_refine 0.0"
 
 
 
