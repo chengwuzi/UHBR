@@ -95,7 +95,7 @@ def print_summary(history):
     
     best_epoch = history[0]
     
-    top_k = min(5, len(history))
+    top_k = min(3, len(history))
     top_epochs = history[:top_k]
     
     avg_recall20 = sum(x["recall20"] for x in top_epochs) / top_k
@@ -198,7 +198,7 @@ def main():
         recall40 = float(test_metrics[2].metric)
         ndcg40 = float(test_metrics[3].metric)
         
-        score = recall20 + recall40 + ndcg20 + ndcg40
+        score = recall20 + ndcg20
         
         history.append({
             "epoch": epoch + 1,
