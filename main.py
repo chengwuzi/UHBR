@@ -9,7 +9,7 @@ from utils import *
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Go UHBR for bundle recommendation")
+    parser = argparse.ArgumentParser(description="Go UBI-graph for bundle recommendation")
     parser.add_argument("--lr", type=float, default=5e-3, help="the learning rate")
     parser.add_argument(
         "--dataset",
@@ -20,7 +20,7 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=100, help="the number of epochs")
     parser.add_argument("--dp", type=float, default=0.2, help="the dropout rate")
     parser.add_argument("--alpha", type=int, default=8, help="alpha in UIBloss")
-    parser.add_argument("--l2_norm", type=float, default=0.01, help="l2 norm")
+    parser.add_argument("--l2_norm", type=float, default=0.1, help="l2 norm")
     parser.add_argument("--model_type", type=str, default="ubi_graph", help="model type: [UHBR, ubi_graph]")
     parser.add_argument("--lambda0", type=float, default=0.05, help="shallow fusion weight 0")
     parser.add_argument("--lambda1", type=float, default=0.95, help="shallow fusion weight 1")
