@@ -85,6 +85,50 @@ def set_seed(seed):
         torch.backends.cudnn.benchmark = True
 
 
+def print_summary(history):
+    if not history:
+        print("No evaluation results to summarize.")
+        return
+
+    # 按照 score 降序排序
+    history.sort(key=lambda x: x["score"], reverse=True)
+    
+    best_epoch = history[0]
+    
+    top_k = min(5, len(history))
+    top_epochs = history[:top_k]
+    
+    avg_recall20 = sum(x["recall20"] for x in top_epochs) / top_k
+    avg_recall40 = sum(x["recall40"] for x in top_epochs) / top_k
+    avg_ndcg20 = sum(x["ndcg20"] for x in top_epochs) / top_k
+    avg_ndcg40 = sum(x["ndcg40"] for x in top_epochs) / top_k
+    avg_score = sum(x["score"] for x in top_epochs) / top_k
+
+    print("\n" + "="*50)
+    print("FINAL TRAINING SUMMARY")
+    print("="*50)
+    
+    print("\n[Best Epoch]")
+    print(f"Epoch: {best_epoch['epoch']}")
+    print(f"Recall@20: {best_epoch['recall20']:.6f}")
+    print(f"Recall@40: {best_epoch['recall40']:.6f}")
+    print(f"NDCG@20:   {best_epoch['ndcg20']:.6f}")
+    print(f"NDCG@40:   {best_epoch['ndcg40']:.6f}")
+    print(f"Score:     {best_epoch['score']:.6f}")
+    
+    print(f"\n[Top-{top_k} Epochs]")
+    for i, res in enumerate(top_epochs, 1):
+        print(f"Rank {i} -> Epoch: {res['epoch']:03d} | R@20: {res['recall20']:.6f} | R@40: {res['recall40']:.6f} | N@20: {res['ndcg20']:.6f} | N@40: {res['ndcg40']:.6f} | Score: {res['score']:.6f}")
+        
+    print(f"\n[Top-{top_k} Average]")
+    print(f"Avg Recall@20: {avg_recall20:.6f}")
+    print(f"Avg Recall@40: {avg_recall40:.6f}")
+    print(f"Avg NDCG@20:   {avg_ndcg20:.6f}")
+    print(f"Avg NDCG@40:   {avg_ndcg40:.6f}")
+    print(f"Avg Score:     {avg_score:.6f}")
+    print("="*50 + "\n")
+
+
 def main():
     args = parse_args()
     device = torch.device("cuda")
@@ -138,12 +182,34 @@ def main():
     scheduler = torch.optim.lr_scheduler.MultiStepLR(
         op, milestones=[35, 55, 75], gamma=0.5
     )
+    
+    history = []
+    
     for epoch in range(args.epochs):
 
         train(model, epoch + 1, train_loader, op, device, loss_func)
-        test(model, test_loader, device, metrics)
+        test_metrics = test(model, test_loader, device, metrics)
         scheduler.step()
-
+        
+        # 提取当前 epoch 的评测结果
+        # 注意: metrics 列表的顺序是 [Recall(20), NDCG(20), Recall(40), NDCG(40), Recall(80), NDCG(80)]
+        recall20 = float(test_metrics[0].metric)
+        ndcg20 = float(test_metrics[1].metric)
+        recall40 = float(test_metrics[2].metric)
+        ndcg40 = float(test_metrics[3].metric)
+        
+        score = recall20 + recall40 + ndcg20 + ndcg40
+        
+        history.append({
+            "epoch": epoch + 1,
+            "recall20": recall20,
+            "recall40": recall40,
+            "ndcg20": ndcg20,
+            "ndcg40": ndcg40,
+            "score": score
+        })
+        
+    print_summary(history)
 
 if __name__ == "__main__":
     main()
