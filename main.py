@@ -25,7 +25,7 @@ def parse_args():
     parser.add_argument("--lambda0", type=float, default=0.5, help="shallow fusion weight 0")
     parser.add_argument("--lambda1", type=float, default=0.5, help="shallow fusion weight 1")
     parser.add_argument("--alpha_refine", type=float, default=1.0, help="UB refinement self weight")
-    parser.add_argument("--beta_refine", type=float, default=0.5, help="UB refinement neigh weight")
+    parser.add_argument("--beta_refine", type=float, default=0.0, help="UB refinement neigh weight")
     return parser.parse_args()
 
 
