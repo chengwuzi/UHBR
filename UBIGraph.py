@@ -1,0 +1,608 @@
+import os
+import argparse
+from time import time
+import numpy as np
+import scipy.sparse as sp
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from torch_sparse import SparseTensor
+
+# ==================== Dataset ====================
+def print_statistics(X, string):
+    print(">" * 10 + string + ">" * 10)
+    print("Average interactions", X.sum(1).mean(0).item())
+    nonzero_row_indice, nonzero_col_indice = X.nonzero()
+    unique_nonzero_row_indice = np.unique(nonzero_row_indice)
+    unique_nonzero_col_indice = np.unique(nonzero_col_indice)
+    print("Non-zero rows", len(unique_nonzero_row_indice) / X.shape[0])
+    print("Non-zero columns", len(unique_nonzero_col_indice) / X.shape[1])
+    print("Matrix density", len(nonzero_row_indice) / (X.shape[0] * X.shape[1]))
+
+class BasicDataset(Dataset):
+    def __init__(self, path, name, task, neg_sample):
+        self.path = path
+        self.name = name
+        self.task = task
+        self.neg_sample = neg_sample
+        self.num_users, self.num_bundles, self.num_items = self.__load_data_size()
+
+    def __getitem__(self, index):
+        raise NotImplementedError
+
+    def __len__(self):
+        raise NotImplementedError
+
+    def __load_data_size(self):
+        with open(os.path.join(self.path, self.name, "{}_data_size.txt".format(self.name)), "r") as f:
+            return [int(s) for s in f.readline().split("\t")][:3]
+
+    def load_U_B_interaction(self):
+        with open(os.path.join(self.path, self.name, "user_bundle_{}.txt".format(self.task)), "r") as f:
+            return list(map(lambda s: tuple(int(i) for i in s[:-1].split("\t")), f.readlines()))
+
+    def load_U_I_interaction(self):
+        with open(os.path.join(self.path, self.name, "user_item.txt"), "r") as f:
+            return list(map(lambda s: tuple(int(i) for i in s[:-1].split("\t")), f.readlines()))
+
+    def load_B_I_affiliation(self):
+        with open(os.path.join(self.path, self.name, "bundle_item.txt"), "r") as f:
+            return list(map(lambda s: tuple(int(i) for i in s[:-1].split("\t")), f.readlines()))
+
+class BundleTrainDataset(BasicDataset):
+    def __init__(self, path, name):
+        super().__init__(path, name, "train", 1)
+        self.U_B_pairs = self.load_U_B_interaction()
+        indice = np.array(self.U_B_pairs, dtype=np.int32)
+        values = np.ones(len(self.U_B_pairs), dtype=np.float32)
+        self.ground_truth_u_b = sp.coo_matrix(
+            (values, (indice[:, 0], indice[:, 1])),
+            shape=(self.num_users, self.num_bundles),
+        ).tocsr()
+        print_statistics(self.ground_truth_u_b, "U-B statistics in train")
+
+    def __getitem__(self, index):
+        user_b, pos_bundle = self.U_B_pairs[index]
+        all_bundles = [pos_bundle]
+        while True:
+            i = np.random.randint(self.num_bundles)
+            if self.ground_truth_u_b[user_b, i] == 0 and not i in all_bundles:
+                all_bundles.append(i)
+                if len(all_bundles) == self.neg_sample + 1:
+                    break
+        return torch.LongTensor([user_b]), torch.LongTensor(all_bundles)
+
+    def __len__(self):
+        return len(self.U_B_pairs)
+
+class BundleTestDataset(BasicDataset):
+    def __init__(self, path, name, train_dataset, task="test"):
+        super().__init__(path, name, task, None)
+        self.U_B_pairs = self.load_U_B_interaction()
+        indice = np.array(self.U_B_pairs, dtype=np.int32)
+        values = np.ones(len(self.U_B_pairs), dtype=np.float32)
+        self.ground_truth_u_b = sp.coo_matrix(
+            (values, (indice[:, 0], indice[:, 1])),
+            shape=(self.num_users, self.num_bundles),
+        ).tocsr()
+
+        self.train_mask_u_b = train_dataset.ground_truth_u_b
+        print_statistics(self.ground_truth_u_b, "U-B statistics in test")
+        self.users = torch.arange(self.num_users, dtype=torch.long).unsqueeze(dim=1)
+        self.bundles = torch.arange(self.num_bundles, dtype=torch.long)
+        assert self.train_mask_u_b.shape == self.ground_truth_u_b.shape
+
+    def __getitem__(self, index):
+        return (
+            index,
+            torch.from_numpy(self.ground_truth_u_b[index].toarray()).squeeze(),
+            torch.from_numpy(self.train_mask_u_b[index].toarray()).squeeze(),
+        )
+
+    def __len__(self):
+        return self.ground_truth_u_b.shape[0]
+
+class ItemDataset(BasicDataset):
+    def __init__(self, path, name):
+        super().__init__(path, name, None, None)
+        self.U_I_pairs = self.load_U_I_interaction()
+        indice = np.array(self.U_I_pairs, dtype=np.int32)
+        values = np.ones(len(self.U_I_pairs), dtype=np.float32)
+        self.ground_truth_u_i = sp.coo_matrix(
+            (values, (indice[:, 0], indice[:, 1])),
+            shape=(self.num_users, self.num_items),
+        ).tocsr()
+        print_statistics(self.ground_truth_u_i, "U-I statistics")
+
+class AssistDataset(BasicDataset):
+    def __init__(self, path, name):
+        super().__init__(path, name, None, None)
+        self.B_I_pairs = self.load_B_I_affiliation()
+        indice = np.array(self.B_I_pairs, dtype=np.int32)
+        values = np.ones(len(self.B_I_pairs), dtype=np.float32)
+        self.ground_truth_b_i = sp.coo_matrix(
+            (values, (indice[:, 0], indice[:, 1])),
+            shape=(self.num_bundles, self.num_items),
+        ).tocsr()
+        print_statistics(self.ground_truth_b_i, "B-I statistics")
+
+def get_dataset(name, path="./data/"):
+    assist_data = AssistDataset(path, name)
+    print("finish loading assist data")
+    item_data = ItemDataset(path, name)
+    print("finish loading item data")
+
+    bundle_train_data = BundleTrainDataset(path, name)
+    print("finish loading bundle train data")
+    bundle_test_data = BundleTestDataset(path, name, bundle_train_data)
+    print("finish loading bundle test data")
+
+    return bundle_train_data, bundle_test_data, item_data, assist_data
+
+
+# ==================== Model ====================
+def Split_HyperGraph_to_device(H, device, split_num=16):
+    H_list = []
+    length = H.shape[0] // split_num
+    for i in range(split_num):
+        if i == split_num - 1:
+            H_list.append(H[length * i : H.shape[0]])
+        else:
+            H_list.append(H[length * i : length * (i + 1)])
+    H_split = [SparseTensor.from_scipy(H_i).to(device) for H_i in H_list]
+    return H_split
+
+def build_ubi_graph(raw_graph):
+    ui_graph, bi_graph, ub_graph = raw_graph
+    num_users, num_items = ui_graph.shape
+    num_bundles = bi_graph.shape[0]
+
+    O_uu = sp.csr_matrix((num_users, num_users))
+    O_bb = sp.csr_matrix((num_bundles, num_bundles))
+    O_ii = sp.csr_matrix((num_items, num_items))
+
+    row1 = sp.hstack([O_uu, ub_graph, ui_graph])
+    row2 = sp.hstack([ub_graph.T, O_bb, bi_graph])
+    row3 = sp.hstack([ui_graph.T, bi_graph.T, O_ii])
+
+    A_ubi = sp.vstack([row1, row2, row3]).tocsr()
+
+    rowsum = A_ubi.sum(axis=1).A.ravel()
+    d_inv_sqrt = 1 / (np.sqrt(rowsum) + 1e-8)
+    D_inv_sqrt = sp.diags(d_inv_sqrt)
+
+    A_ubi_norm = D_inv_sqrt @ A_ubi @ D_inv_sqrt
+    return A_ubi, A_ubi_norm
+
+class UBIGraph(nn.Module):
+    def __init__(self, raw_graph, device, dp, l2_norm, lambda0=0.05, lambda1=0.95, emb_size=64):
+        super().__init__()
+
+        ui_graph, bi_graph, ub_graph = raw_graph
+        self.num_users, self.num_bundles, self.num_items = (
+            ub_graph.shape[0],
+            ub_graph.shape[1],
+            ui_graph.shape[1],
+        )
+        self.lambda0 = lambda0
+        self.lambda1 = lambda1
+        
+        self.embed_L2_norm = l2_norm
+        self.drop = nn.Dropout(dp)
+
+        self.A_ubi, A_ubi_norm = build_ubi_graph(raw_graph)
+        self.A_ubi_norm_split = Split_HyperGraph_to_device(A_ubi_norm, device)
+        
+        print("finish generating ubi unified graph")
+        print(f"A_UB.shape: {ub_graph.shape}")
+        print(f"A_UI.shape: {ui_graph.shape}")
+        print(f"A_BI.shape: {bi_graph.shape}")
+        print(f"A_ubi.shape: {self.A_ubi.shape}")
+        
+        self.users_feature = nn.Parameter(
+            torch.FloatTensor(self.num_users, emb_size).normal_(0, 0.5 / emb_size)
+        )
+        self.bundles_feature = nn.Parameter(
+            torch.FloatTensor(self.num_bundles, emb_size).normal_(0, 0.5 / emb_size)
+        )
+        self.items_feature = nn.Parameter(
+            torch.FloatTensor(self.num_items, emb_size).normal_(0, 0.5 / emb_size)
+        )
+        self.user_bound = nn.Parameter(
+            torch.FloatTensor(emb_size, 1).normal_(0, 0.5 / emb_size)
+        )
+
+    def propagate(self):
+        eu0 = self.users_feature
+        eb0 = self.bundles_feature
+        ei0 = self.items_feature
+
+        e0 = torch.cat([eu0, eb0, ei0], dim=0)
+
+        e1 = torch.cat([G @ e0 for G in self.A_ubi_norm_split], dim=0)
+
+        e_star = self.lambda0 * e0 + self.lambda1 * self.drop(e1)
+
+        Eu_star = e_star[:self.num_users]
+        Eb_star = e_star[self.num_users:self.num_users + self.num_bundles]
+        Ei_star = e_star[self.num_users + self.num_bundles:]
+        
+        return Eu_star, Eb_star, Ei_star
+
+    def predict(self, users_feature, bundles_feature):
+        pred = torch.sum(users_feature * bundles_feature, 2)
+        return pred
+
+    def regularize(self, users_feature, bundles_feature, items_feature):
+        loss = self.embed_L2_norm * (
+            (users_feature ** 2).sum() + (bundles_feature ** 2).sum() + (items_feature ** 2).sum()
+        )
+        return loss
+
+    def forward(self, users, bundles):
+        users_feature, bundles_feature, items_feature = self.propagate()
+        users_embedding = users_feature[users].expand(-1, bundles.shape[1], -1)
+        bundles_embedding = bundles_feature[bundles]
+        pred = self.predict(users_embedding, bundles_embedding)
+        loss = self.regularize(users_feature, bundles_feature, items_feature)
+        user_score_bound = users_feature[users] @ self.user_bound
+        return pred, user_score_bound, loss
+
+    def evaluate(self, propagate_result, users):
+        users_feature, bundles_feature, items_feature = propagate_result
+        users_feature = users_feature[users]
+        scores = users_feature @ (bundles_feature.T)
+        return scores
+
+
+# ==================== Utils ====================
+class UIBLoss(nn.Module):
+    def __init__(self, alpha=8, reduction="sum"):
+        super().__init__()
+        self.reduction = reduction
+        self.alpha = alpha
+
+    def forward(self, model_output, **kwargs):
+        pred, user_bound, reg_loss = model_output
+        loss_p = -torch.log(torch.sigmoid(pred[:, :1] - user_bound))
+        loss_n = -torch.log(torch.sigmoid(user_bound - pred[:, 1:]))
+        loss = loss_p + self.alpha * loss_n
+        if self.reduction == "mean":
+            loss = torch.mean(loss)
+        elif self.reduction == "sum":
+            loss = torch.sum(loss)
+        elif self.reduction == "none":
+            pass
+        else:
+            raise ValueError("reduction must be  'none' | 'mean' | 'sum'")
+        return loss + reg_loss
+
+_is_hit_cache = {}
+
+def get_is_hit(scores, ground_truth, topk):
+    global _is_hit_cache
+    cacheid = (id(scores), id(ground_truth))
+    if topk in _is_hit_cache and _is_hit_cache[topk]["id"] == cacheid:
+        return _is_hit_cache[topk]["is_hit"]
+    else:
+        device = scores.device
+        _, col_indice = torch.topk(scores, topk)
+        row_indice = torch.zeros_like(col_indice) + torch.arange(
+            scores.shape[0], device=device, dtype=torch.long
+        ).view(-1, 1)
+        is_hit = ground_truth[row_indice.view(-1), col_indice.view(-1)].view(-1, topk)
+        _is_hit_cache[topk] = {"id": cacheid, "is_hit": is_hit}
+        return is_hit
+
+class _Metric:
+    def __init__(self):
+        self.start()
+
+    @property
+    def metric(self):
+        return self._metric
+
+    @property
+    def sum(self):
+        return self._sum
+
+    @property
+    def cnt(self):
+        return self._cnt
+
+    def __call__(self, scores, ground_truth):
+        raise NotImplementedError
+
+    def get_title(self):
+        raise NotImplementedError
+
+    def start(self):
+        global _is_hit_cache
+        _is_hit_cache = {}
+        self._cnt = 0
+        self._metric = 0
+        self._sum = 0
+
+    def stop(self):
+        global _is_hit_cache
+        _is_hit_cache = {}
+        self._metric = self._sum / self._cnt
+
+class Recall(_Metric):
+    def __init__(self, topk):
+        super().__init__()
+        self.topk = topk
+        self.epison = 1e-8
+
+    def get_title(self):
+        return "Recall@{}".format(self.topk)
+
+    def __call__(self, scores, ground_truth):
+        is_hit = get_is_hit(scores, ground_truth, self.topk)
+        is_hit = is_hit.sum(dim=1)
+        num_pos = ground_truth.sum(dim=1)
+        self._cnt += scores.shape[0] - (num_pos == 0).sum().item()
+        self._sum += (is_hit / (num_pos + self.epison)).sum().item()
+
+class NDCG(_Metric):
+    def DCG(self, hit, device=torch.device("cpu")):
+        hit = hit / torch.log2(
+            torch.arange(2, self.topk + 2, device=device, dtype=torch.float)
+        )
+        return hit.sum(-1)
+
+    def IDCG(self, num_pos):
+        hit = torch.zeros(self.topk, dtype=torch.float)
+        hit[:num_pos] = 1
+        return self.DCG(hit)
+
+    def __init__(self, topk):
+        super().__init__()
+        self.topk = topk
+        self.IDCGs = torch.empty(1 + self.topk, dtype=torch.float)
+        self.IDCGs[0] = 1
+        for i in range(1, self.topk + 1):
+            self.IDCGs[i] = self.IDCG(i)
+
+    def get_title(self):
+        return "NDCG@{}".format(self.topk)
+
+    def __call__(self, scores, ground_truth):
+        device = scores.device
+        is_hit = get_is_hit(scores, ground_truth, self.topk)
+        num_pos = ground_truth.sum(dim=1).clamp(0, self.topk).to(torch.long)
+        dcg = self.DCG(is_hit, device)
+        idcg = self.IDCGs[num_pos.cpu()]
+        ndcg = dcg / idcg.to(device)
+        self._cnt += scores.shape[0] - (num_pos == 0).sum().item()
+        self._sum += ndcg.sum().item()
+
+class data_prefetcher:
+    def __init__(self, loader, device):
+        self.loader = iter(loader)
+        self.stream = torch.cuda.Stream(device)
+        self.device = device
+        self.preload()
+
+    def preload(self):
+        try:
+            self.next_user, self.next_bundle = next(self.loader)
+        except StopIteration:
+            self.next_user = None
+            self.next_bundle = None
+            return
+        with torch.cuda.stream(self.stream):
+            self.next_user = self.next_user.to(self.device, non_blocking=True)
+            self.next_bundle = self.next_bundle.to(self.device, non_blocking=True)
+
+    def next(self):
+        torch.cuda.current_stream().wait_stream(self.stream)
+        user = self.next_user
+        bundle = self.next_bundle
+        self.preload()
+        return user, bundle
+
+
+# ==================== Train/Test ====================
+def parse_args():
+    parser = argparse.ArgumentParser(description="UBI-graph for bundle recommendation (Standard Version)")
+    parser.add_argument("--lr", type=float, default=5e-3, help="the learning rate")
+    parser.add_argument("--dataset", type=str, default="Youshu", help="available datasets: [Youshu, NetEase]")
+    parser.add_argument("--epochs", type=int, default=100, help="the number of epochs")
+    parser.add_argument("--dp", type=float, default=0.2, help="the dropout rate")
+    parser.add_argument("--alpha", type=int, default=8, help="alpha in UIBloss")
+    parser.add_argument("--l2_norm", type=float, default=0.01, help="l2 norm")
+    parser.add_argument("--lambda0", type=float, default=0.05, help="shallow fusion weight 0")
+    parser.add_argument("--lambda1", type=float, default=0.95, help="shallow fusion weight 1")
+    return parser.parse_args()
+
+def train(model, epoch, loader, optim, device, loss_func):
+    prefetcher = data_prefetcher(loader, device)
+    model.train()
+    start = time()
+    i = 0
+    users, bundles = prefetcher.next()
+    while users is not None:
+        i += 1
+        optim.zero_grad()
+        modelout = model(users, bundles)
+        loss = loss_func(modelout, batch_size=loader.batch_size)
+        loss.backward()
+        optim.step()
+        if i % 20 == 0:
+            print(
+                "U-B Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}".format(
+                    epoch,
+                    (i + 1) * loader.batch_size,
+                    len(loader.dataset),
+                    100.0 * (i + 1) / len(loader),
+                    loss,
+                )
+            )
+        users, bundles = prefetcher.next()
+    print("Train Epoch: {}: time = {:d}s".format(epoch, int(time() - start)))
+    return loss
+
+def test(model, loader, device, metrics):
+    model.eval()
+    for metric in metrics:
+        metric.start()
+    start = time()
+    with torch.no_grad():
+        rs = model.propagate()
+        for users, ground_truth_u_b, train_mask_u_b in loader:
+            pred_b = model.evaluate(rs, users.to(device))
+            pred_b -= 1e8 * train_mask_u_b.to(device)
+            for metric in metrics:
+                metric(pred_b, ground_truth_u_b.to(device))
+    print("Test: time={:.5f}s".format(int(time() - start)))
+    for metric in metrics:
+        metric.stop()
+        print("{}:{}".format(metric.get_title(), metric.metric), end="\t")
+    print("")
+    return metrics
+
+def set_seed(seed):
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = True
+
+def print_summary(history):
+    if not history:
+        print("No evaluation results to summarize.")
+        return
+
+    history.sort(key=lambda x: x["score"], reverse=True)
+    best_epoch = history[0]
+    top_k = min(3, len(history))
+    top_epochs = history[:top_k]
+    
+    avg_recall10 = sum(x["recall10"] for x in top_epochs) / top_k
+    avg_recall20 = sum(x["recall20"] for x in top_epochs) / top_k
+    avg_recall40 = sum(x["recall40"] for x in top_epochs) / top_k
+    avg_recall80 = sum(x["recall80"] for x in top_epochs) / top_k
+    avg_ndcg10 = sum(x["ndcg10"] for x in top_epochs) / top_k
+    avg_ndcg20 = sum(x["ndcg20"] for x in top_epochs) / top_k
+    avg_ndcg40 = sum(x["ndcg40"] for x in top_epochs) / top_k
+    avg_ndcg80 = sum(x["ndcg80"] for x in top_epochs) / top_k
+    avg_score = sum(x["score"] for x in top_epochs) / top_k
+
+    print("\n" + "="*50)
+    print("FINAL TRAINING SUMMARY")
+    print("="*50)
+    
+    print("\n[Best Epoch]")
+    print(f"Epoch: {best_epoch['epoch']}")
+    print(f"Recall@10: {best_epoch['recall10']:.6f}")
+    print(f"Recall@20: {best_epoch['recall20']:.6f}")
+    print(f"Recall@40: {best_epoch['recall40']:.6f}")
+    print(f"Recall@80: {best_epoch['recall80']:.6f}")
+    print(f"NDCG@10:   {best_epoch['ndcg10']:.6f}")
+    print(f"NDCG@20:   {best_epoch['ndcg20']:.6f}")
+    print(f"NDCG@40:   {best_epoch['ndcg40']:.6f}")
+    print(f"NDCG@80:   {best_epoch['ndcg80']:.6f}")
+    print(f"Score:     {best_epoch['score']:.6f}")
+    
+    print(f"\n[Top-{top_k} Epochs]")
+    for i, res in enumerate(top_epochs, 1):
+        print(f"Rank {i} -> Epoch: {res['epoch']:03d} | R@10: {res['recall10']:.6f} | R@20: {res['recall20']:.6f} | R@40: {res['recall40']:.6f} | R@80: {res['recall80']:.6f} | N@10: {res['ndcg10']:.6f} | N@20: {res['ndcg20']:.6f} | N@40: {res['ndcg40']:.6f} | N@80: {res['ndcg80']:.6f} | Score: {res['score']:.6f}")
+        
+    print(f"\n[Top-{top_k} Average]")
+    print(f"Avg Recall@10: {avg_recall10:.6f}")
+    print(f"Avg Recall@20: {avg_recall20:.6f}")
+    print(f"Avg Recall@40: {avg_recall40:.6f}")
+    print(f"Avg Recall@80: {avg_recall80:.6f}")
+    print(f"Avg NDCG@10:   {avg_ndcg10:.6f}")
+    print(f"Avg NDCG@20:   {avg_ndcg20:.6f}")
+    print(f"Avg NDCG@40:   {avg_ndcg40:.6f}")
+    print(f"Avg NDCG@80:   {avg_ndcg80:.6f}")
+    print(f"Avg Score:     {avg_score:.6f}")
+    print("="*50 + "\n")
+
+def main():
+    args = parse_args()
+    device = torch.device("cuda")
+    set_seed(123)
+    
+    (
+        bundle_train_data,
+        bundle_test_data,
+        item_data,
+        assist_data,
+    ) = get_dataset(args.dataset, path="./data")
+    
+    if args.dataset == "Youshu":
+        batch_size = 1024
+    else:
+        batch_size = 2048
+        
+    train_loader = DataLoader(
+        bundle_train_data, batch_size, True, num_workers=8, pin_memory=True
+    )
+    test_loader = DataLoader(
+        bundle_test_data, 4096, False, num_workers=16, pin_memory=True
+    )
+
+    ub_graph = bundle_train_data.ground_truth_u_b
+    ui_graph = item_data.ground_truth_u_i
+    bi_graph = assist_data.ground_truth_b_i
+
+    metrics = [
+        Recall(10), NDCG(10),
+        Recall(20), NDCG(20),
+        Recall(40), NDCG(40),
+        Recall(80), NDCG(80),
+    ]
+    loss_func = UIBLoss(alpha=args.alpha)
+    graph = [ui_graph, bi_graph, ub_graph]
+    
+    model = UBIGraph(
+        graph, device, args.dp, args.l2_norm, 
+        args.lambda0, args.lambda1
+    ).to(device)
+        
+    print("num parameters")
+    print(sum(p.numel() for p in model.parameters()))
+    
+    op = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(
+        op, milestones=[35, 55, 75], gamma=0.5
+    )
+    
+    history = []
+    
+    for epoch in range(args.epochs):
+        train(model, epoch + 1, train_loader, op, device, loss_func)
+        test_metrics = test(model, test_loader, device, metrics)
+        scheduler.step()
+        
+        recall10 = float(test_metrics[0].metric)
+        ndcg10 = float(test_metrics[1].metric)
+        recall20 = float(test_metrics[2].metric)
+        ndcg20 = float(test_metrics[3].metric)
+        recall40 = float(test_metrics[4].metric)
+        ndcg40 = float(test_metrics[5].metric)
+        recall80 = float(test_metrics[6].metric)
+        ndcg80 = float(test_metrics[7].metric)
+        
+        score = recall20 + ndcg20
+        
+        history.append({
+            "epoch": epoch + 1,
+            "recall10": recall10,
+            "recall20": recall20,
+            "recall40": recall40,
+            "recall80": recall80,
+            "ndcg10": ndcg10,
+            "ndcg20": ndcg20,
+            "ndcg40": ndcg40,
+            "ndcg80": ndcg80,
+            "score": score
+        })
+        
+    print_summary(history)
+
+if __name__ == "__main__":
+    main()
