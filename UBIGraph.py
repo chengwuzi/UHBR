@@ -126,7 +126,7 @@ class AssistDataset(BasicDataset):
         ).tocsr()
         print_statistics(self.ground_truth_b_i, "B-I statistics")
 
-def get_dataset(name, path="./data/"):
+def get_dataset(name, path="./datasets/"):
     assist_data = AssistDataset(path, name)
     print("finish loading assist data")
     item_data = ItemDataset(path, name)
@@ -505,7 +505,7 @@ def main():
         bundle_test_data,
         item_data,
         assist_data,
-    ) = get_dataset(args.dataset, path="./data")
+    ) = get_dataset(args.dataset, path="./datasets")
     
     if args.dataset == "Youshu":
         batch_size = 1024
