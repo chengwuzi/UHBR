@@ -134,10 +134,12 @@ def get_dataset(name, path="./data/"):
 
     bundle_train_data = BundleTrainDataset(path, name)
     print("finish loading bundle train data")
-    bundle_test_data = BundleTestDataset(path, name, bundle_train_data)
+    bundle_val_data = BundleTestDataset(path, name, bundle_train_data, task="tune")
+    print("finish loading bundle val data")
+    bundle_test_data = BundleTestDataset(path, name, bundle_train_data, task="test")
     print("finish loading bundle test data")
 
-    return bundle_train_data, bundle_test_data, item_data, assist_data
+    return bundle_train_data, bundle_val_data, bundle_test_data, item_data, assist_data
 
 
 # ==================== Model ====================
@@ -469,56 +471,27 @@ def set_seed(seed):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = True
 
-def print_summary(history):
-    if not history:
+def print_summary(best_record):
+    if not best_record:
         print("No evaluation results to summarize.")
         return
-
-    history.sort(key=lambda x: x["score"], reverse=True)
-    best_epoch = history[0]
-    top_k = min(3, len(history))
-    top_epochs = history[:top_k]
-    
-    avg_recall10 = sum(x["recall10"] for x in top_epochs) / top_k
-    avg_recall20 = sum(x["recall20"] for x in top_epochs) / top_k
-    avg_recall40 = sum(x["recall40"] for x in top_epochs) / top_k
-    avg_recall80 = sum(x["recall80"] for x in top_epochs) / top_k
-    avg_ndcg10 = sum(x["ndcg10"] for x in top_epochs) / top_k
-    avg_ndcg20 = sum(x["ndcg20"] for x in top_epochs) / top_k
-    avg_ndcg40 = sum(x["ndcg40"] for x in top_epochs) / top_k
-    avg_ndcg80 = sum(x["ndcg80"] for x in top_epochs) / top_k
-    avg_score = sum(x["score"] for x in top_epochs) / top_k
 
     print("\n" + "="*50)
     print("FINAL TRAINING SUMMARY")
     print("="*50)
     
-    print("\n[Best Epoch]")
-    print(f"Epoch: {best_epoch['epoch']}")
-    print(f"Recall@10: {best_epoch['recall10']:.6f}")
-    print(f"Recall@20: {best_epoch['recall20']:.6f}")
-    print(f"Recall@40: {best_epoch['recall40']:.6f}")
-    print(f"Recall@80: {best_epoch['recall80']:.6f}")
-    print(f"NDCG@10:   {best_epoch['ndcg10']:.6f}")
-    print(f"NDCG@20:   {best_epoch['ndcg20']:.6f}")
-    print(f"NDCG@40:   {best_epoch['ndcg40']:.6f}")
-    print(f"NDCG@80:   {best_epoch['ndcg80']:.6f}")
-    print(f"Score:     {best_epoch['score']:.6f}")
+    print("\n### Best Epoch (selected by validation score)")
+    print(f"best_epoch: {best_record['epoch']}")
+    print(f"best_val_score: {best_record['val_score']:.6f}")
     
-    print(f"\n[Top-{top_k} Epochs]")
-    for i, res in enumerate(top_epochs, 1):
-        print(f"Rank {i} -> Epoch: {res['epoch']:03d} | R@10: {res['recall10']:.6f} | R@20: {res['recall20']:.6f} | R@40: {res['recall40']:.6f} | R@80: {res['recall80']:.6f} | N@10: {res['ndcg10']:.6f} | N@20: {res['ndcg20']:.6f} | N@40: {res['ndcg40']:.6f} | N@80: {res['ndcg80']:.6f} | Score: {res['score']:.6f}")
-        
-    print(f"\n[Top-{top_k} Average]")
-    print(f"Avg Recall@10: {avg_recall10:.6f}")
-    print(f"Avg Recall@20: {avg_recall20:.6f}")
-    print(f"Avg Recall@40: {avg_recall40:.6f}")
-    print(f"Avg Recall@80: {avg_recall80:.6f}")
-    print(f"Avg NDCG@10:   {avg_ndcg10:.6f}")
-    print(f"Avg NDCG@20:   {avg_ndcg20:.6f}")
-    print(f"Avg NDCG@40:   {avg_ndcg40:.6f}")
-    print(f"Avg NDCG@80:   {avg_ndcg80:.6f}")
-    print(f"Avg Score:     {avg_score:.6f}")
+    print("\nvalidation metrics at best epoch:")
+    print(f"  - Recall@10: {best_record['val_metrics'][0]:.6f} / @20: {best_record['val_metrics'][2]:.6f} / @40: {best_record['val_metrics'][4]:.6f} / @80: {best_record['val_metrics'][6]:.6f}")
+    print(f"  - NDCG@10:   {best_record['val_metrics'][1]:.6f} / @20: {best_record['val_metrics'][3]:.6f} / @40: {best_record['val_metrics'][5]:.6f} / @80: {best_record['val_metrics'][7]:.6f}")
+    
+    print("\ntest metrics at best epoch:")
+    print(f"  - Recall@10: {best_record['test_metrics'][0]:.6f} / @20: {best_record['test_metrics'][2]:.6f} / @40: {best_record['test_metrics'][4]:.6f} / @80: {best_record['test_metrics'][6]:.6f}")
+    print(f"  - NDCG@10:   {best_record['test_metrics'][1]:.6f} / @20: {best_record['test_metrics'][3]:.6f} / @40: {best_record['test_metrics'][5]:.6f} / @80: {best_record['test_metrics'][7]:.6f}")
+    
     print("="*50 + "\n")
 
 def main():
@@ -528,6 +501,7 @@ def main():
     
     (
         bundle_train_data,
+        bundle_val_data,
         bundle_test_data,
         item_data,
         assist_data,
@@ -540,6 +514,9 @@ def main():
         
     train_loader = DataLoader(
         bundle_train_data, batch_size, True, num_workers=8, pin_memory=True
+    )
+    val_loader = DataLoader(
+        bundle_val_data, 4096, False, num_workers=16, pin_memory=True
     )
     test_loader = DataLoader(
         bundle_test_data, 4096, False, num_workers=16, pin_memory=True
@@ -571,38 +548,35 @@ def main():
         op, milestones=[35, 55, 75], gamma=0.5
     )
     
-    history = []
+    best_record = None
+    best_val_score = -1.0
     
     for epoch in range(args.epochs):
         train(model, epoch + 1, train_loader, op, device, loss_func)
-        test_metrics = test(model, test_loader, device, metrics)
+        
+        print(f"--- Epoch {epoch + 1} Validation ---")
+        val_metrics_obj = test(model, val_loader, device, metrics)
+        val_metrics_vals = [float(m.metric) for m in val_metrics_obj]
+        
+        print(f"--- Epoch {epoch + 1} Test ---")
+        test_metrics_obj = test(model, test_loader, device, metrics)
+        test_metrics_vals = [float(m.metric) for m in test_metrics_obj]
+        
         scheduler.step()
         
-        recall10 = float(test_metrics[0].metric)
-        ndcg10 = float(test_metrics[1].metric)
-        recall20 = float(test_metrics[2].metric)
-        ndcg20 = float(test_metrics[3].metric)
-        recall40 = float(test_metrics[4].metric)
-        ndcg40 = float(test_metrics[5].metric)
-        recall80 = float(test_metrics[6].metric)
-        ndcg80 = float(test_metrics[7].metric)
+        val_score = val_metrics_vals[2] + val_metrics_vals[3]  # Recall@20 + NDCG@20
         
-        score = recall20 + ndcg20
+        if val_score > best_val_score:
+            best_val_score = val_score
+            best_record = {
+                "epoch": epoch + 1,
+                "val_score": val_score,
+                "val_metrics": val_metrics_vals,
+                "test_metrics": test_metrics_vals
+            }
+            print(f">>> New best epoch {epoch + 1} found! Val Score: {val_score:.6f}")
         
-        history.append({
-            "epoch": epoch + 1,
-            "recall10": recall10,
-            "recall20": recall20,
-            "recall40": recall40,
-            "recall80": recall80,
-            "ndcg10": ndcg10,
-            "ndcg20": ndcg20,
-            "ndcg40": ndcg40,
-            "ndcg80": ndcg80,
-            "score": score
-        })
-        
-    print_summary(history)
+    print_summary(best_record)
 
 if __name__ == "__main__":
     main()
