@@ -432,7 +432,7 @@ class data_prefetcher:
 def parse_args():
     parser = argparse.ArgumentParser(description="UHBR for bundle recommendation (Standard Version)")
     parser.add_argument("--lr", type=float, default=5e-3, help="the learning rate")
-    parser.add_argument("--dataset", type=str, default="Youshu", help="available datasets: [Youshu, NetEase]")
+    parser.add_argument("--dataset", type=str, default="Youshu", help="available datasets: [Youshu, NetEase, iFashion]")
     parser.add_argument("--epochs", type=int, default=120, help="the number of epochs")
     parser.add_argument("--dp", type=float, default=0.2, help="the dropout rate")
     parser.add_argument("--alpha", type=int, default=8, help="alpha in UIBloss")
