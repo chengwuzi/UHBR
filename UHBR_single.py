@@ -147,13 +147,18 @@ def get_dataset(name, path="./datasets/"):
 def Split_HyperGraph_to_device(H, device, split_num=128):
     H_list = []
     length = H.shape[0] // split_num
+    
+    # Pre-calculate to avoid memory spikes
     for i in range(split_num):
         if i == split_num - 1:
-            H_list.append(H[length * i : H.shape[0]])
+            chunk = H[length * i : H.shape[0]]
         else:
-            H_list.append(H[length * i : length * (i + 1)])
-    H_split = [SparseTensor.from_scipy(H_i).to(device) for H_i in H_list]
-    return H_split
+            chunk = H[length * i : length * (i + 1)]
+            
+        # Convert incrementally to avoid holding too many dense/sparse representations
+        H_list.append(SparseTensor.from_scipy(chunk).to(device))
+        
+    return H_list
 
 def normalize_Hyper(H):
     print("starting normalize_Hyper...")
