@@ -156,24 +156,49 @@ def Split_HyperGraph_to_device(H, device, split_num=16):
     return H_split
 
 def normalize_Hyper(H):
-    D_v = sp.diags(1 / (np.sqrt(H.sum(axis=1).A.ravel()) + 1e-8))
-    D_e = sp.diags(1 / (np.sqrt(H.sum(axis=0).A.ravel()) + 1e-8))
-    H_nomalized = D_v @ H @ D_e @ H.T @ D_v
+    print("starting normalize_Hyper...")
+    print(f"H shape: {H.shape}")
+    
+    # Process D_v
+    print("computing D_v...")
+    v_sum = np.array(H.sum(axis=1)).ravel()
+    D_v_inv = 1.0 / (np.sqrt(v_sum) + 1e-8)
+    D_v = sp.diags(D_v_inv)
+    
+    # Process D_e
+    print("computing D_e...")
+    e_sum = np.array(H.sum(axis=0)).ravel()
+    D_e_inv = 1.0 / (np.sqrt(e_sum) + 1e-8)
+    D_e = sp.diags(D_e_inv)
+    
+    print("performing matrix multiplication for normalized H...")
+    # Compute iteratively to avoid huge memory spike
+    H_nomalized = D_v @ H
+    H_nomalized = H_nomalized @ D_e
+    H_nomalized = H_nomalized @ H.T
+    H_nomalized = H_nomalized @ D_v
+    
+    print("normalize_Hyper finished")
     return H_nomalized
 
 def mix_hypergraph(raw_graph, threshold=10):
     ui_graph, bi_graph, ub_graph = raw_graph
 
+    print("computing uu_graph...")
     uu_graph = ub_graph @ ub_graph.T
     for i in range(ub_graph.shape[0]):
         for r in range(uu_graph.indptr[i], uu_graph.indptr[i + 1]):
             uu_graph.data[r] = 1 if uu_graph.data[r] > threshold else 0
+    print("uu_graph computed")
 
+    print("computing bb_graph...")
     bb_graph = ub_graph.T @ ub_graph
     for i in range(ub_graph.shape[1]):
         for r in range(bb_graph.indptr[i], bb_graph.indptr[i + 1]):
             bb_graph.data[r] = 1 if bb_graph.data[r] > threshold else 0
+    print("bb_graph computed")
 
+    print("converting to COO format...")
     # Convert strictly to COO before block operations to avoid dense matrix creation
     ui_graph = ui_graph.tocoo()
     bi_graph = bi_graph.tocoo()
@@ -181,10 +206,12 @@ def mix_hypergraph(raw_graph, threshold=10):
     uu_graph = uu_graph.tocoo()
     bb_graph = bb_graph.tocoo()
 
+    print("stacking matrices...")
     H = sp.vstack((ui_graph, bi_graph))
     non_atom_graph = sp.vstack((ub_graph, bb_graph))
     non_atom_graph = sp.hstack((non_atom_graph, sp.vstack((uu_graph, ub_graph.T))))
     H = sp.hstack((H, non_atom_graph))
+    print("matrix stacked")
     return H.tocsr()
 
 class UHBR(nn.Module):
