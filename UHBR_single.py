@@ -144,7 +144,7 @@ def get_dataset(name, path="./datasets/"):
 
 
 # ==================== Model ====================
-def Split_HyperGraph_to_device(H, device, split_num=16):
+def Split_HyperGraph_to_device(H, device, split_num=128):
     H_list = []
     length = H.shape[0] // split_num
     for i in range(split_num):
@@ -261,7 +261,15 @@ class UHBR(nn.Module):
 
     def propagate(self):
         embed_0 = torch.cat([self.users_feature, self.bundles_feature], dim=0)
-        embed_1 = torch.cat([G @ embed_0 for G in self.atom_graph], dim=0)
+        # Using a loop to avoid large memory spikes in a list comprehension
+        embed_1_list = []
+        for G in self.atom_graph:
+            # Move block computation explicitly to manage memory better
+            block_out = G @ embed_0
+            embed_1_list.append(block_out)
+        
+        embed_1 = torch.cat(embed_1_list, dim=0)
+        
         all_embeds = embed_0 / 2 + self.drop(embed_1) / 3
         users_feature, bundles_feature = torch.split(
             all_embeds, [self.num_users, self.num_bundles], dim=0
@@ -290,7 +298,12 @@ class UHBR(nn.Module):
         main_output = (pred, user_score_bound, reg_loss)
 
         # CL Output: Anchor representations for current batch
-        user_anchor = users_feature[users][:, 0, :]
+        # users_feature is [num_users, emb_dim]
+        # users is [batch_size, 1]
+        user_anchor = users_feature[users.squeeze(1)]
+        
+        # bundles_feature is [num_bundles, emb_dim]
+        # bundles is [batch_size, 1 + neg_sample]
         bundle_anchor = bundles_feature[bundles[:, 0]]
 
         user_view1 = self.build_noise_view(user_anchor)
