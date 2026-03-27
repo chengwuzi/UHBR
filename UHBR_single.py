@@ -174,11 +174,18 @@ def mix_hypergraph(raw_graph, threshold=10):
         for r in range(bb_graph.indptr[i], bb_graph.indptr[i + 1]):
             bb_graph.data[r] = 1 if bb_graph.data[r] > threshold else 0
 
+    # Convert strictly to COO before block operations to avoid dense matrix creation
+    ui_graph = ui_graph.tocoo()
+    bi_graph = bi_graph.tocoo()
+    ub_graph = ub_graph.tocoo()
+    uu_graph = uu_graph.tocoo()
+    bb_graph = bb_graph.tocoo()
+
     H = sp.vstack((ui_graph, bi_graph))
     non_atom_graph = sp.vstack((ub_graph, bb_graph))
     non_atom_graph = sp.hstack((non_atom_graph, sp.vstack((uu_graph, ub_graph.T))))
     H = sp.hstack((H, non_atom_graph))
-    return H
+    return H.tocsr()
 
 class UHBR(nn.Module):
     def __init__(self, raw_graph, device, dp, l2_norm, emb_size=64, cl_weight=0.04, cl_temp=0.23, cl_noise_eps=0.1):
@@ -434,6 +441,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=5e-3, help="the learning rate")
     parser.add_argument("--dataset", type=str, default="Youshu", help="available datasets: [Youshu, NetEase, iFashion]")
     parser.add_argument("--epochs", type=int, default=120, help="the number of epochs")
+    parser.add_argument("--batch_size", type=int, default=0, help="batch size. 0 means auto-select based on dataset")
     parser.add_argument("--dp", type=float, default=0.2, help="the dropout rate")
     parser.add_argument("--alpha", type=int, default=8, help="alpha in UIBloss")
     parser.add_argument("--l2_norm", type=float, default=0.1, help="l2 norm")
@@ -545,8 +553,12 @@ def main():
         assist_data,
     ) = get_dataset(args.dataset, path="./datasets")
     
-    if args.dataset == "Youshu":
+    if args.batch_size > 0:
+        batch_size = args.batch_size
+    elif args.dataset == "Youshu":
         batch_size = 1024
+    elif args.dataset == "iFashion":
+        batch_size = 512
     else:
         batch_size = 2048
         
@@ -554,10 +566,10 @@ def main():
         bundle_train_data, batch_size, True, num_workers=8, pin_memory=True
     )
     val_loader = DataLoader(
-        bundle_val_data, 4096, False, num_workers=16, pin_memory=True
+        bundle_val_data, batch_size * 2, False, num_workers=16, pin_memory=True
     )
     test_loader = DataLoader(
-        bundle_test_data, 4096, False, num_workers=16, pin_memory=True
+        bundle_test_data, batch_size * 2, False, num_workers=16, pin_memory=True
     )
 
     ub_graph = bundle_train_data.ground_truth_u_b
