@@ -5,6 +5,7 @@ import numpy as np
 import scipy.sparse as sp
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torch_sparse import SparseTensor
 
@@ -180,7 +181,7 @@ def mix_hypergraph(raw_graph, threshold=10):
     return H
 
 class UHBR(nn.Module):
-    def __init__(self, raw_graph, device, dp, l2_norm, emb_size=64):
+    def __init__(self, raw_graph, device, dp, l2_norm, emb_size=64, cl_weight=0.04, cl_temp=0.23, cl_noise_eps=0.1):
         super().__init__()
 
         ui_graph, bi_graph, ub_graph = raw_graph
@@ -205,6 +206,24 @@ class UHBR(nn.Module):
         )
         self.drop = nn.Dropout(dp)
         self.embed_L2_norm = l2_norm
+
+        # CL Parameters
+        self.cl_weight = cl_weight
+        self.cl_temp = cl_temp
+        self.cl_noise_eps = cl_noise_eps
+
+    def build_noise_view(self, x):
+        noise = torch.rand_like(x)
+        noise = F.normalize(noise, dim=-1)
+        view = x + self.cl_noise_eps * noise
+        return view
+
+    def info_nce_loss(self, z1, z2):
+        z1 = F.normalize(z1, dim=-1)
+        z2 = F.normalize(z2, dim=-1)
+        logits = z1 @ z2.T / self.cl_temp
+        labels = torch.arange(logits.shape[0], device=z1.device)
+        return F.cross_entropy(logits, labels)
 
     def propagate(self):
         embed_0 = torch.cat([self.users_feature, self.bundles_feature], dim=0)
@@ -231,9 +250,28 @@ class UHBR(nn.Module):
         users_embedding = users_feature[users].expand(-1, bundles.shape[1], -1)
         bundles_embedding = bundles_feature[bundles]
         pred = self.predict(users_embedding, bundles_embedding)
-        loss = self.regularize(users_feature, bundles_feature)
+        reg_loss = self.regularize(users_feature, bundles_feature)
         user_score_bound = users_feature[users] @ self.user_bound
-        return pred, user_score_bound, loss
+        
+        main_output = (pred, user_score_bound, reg_loss)
+
+        # CL Output: Anchor representations for current batch
+        user_anchor = users_feature[users][:, 0, :]
+        bundle_anchor = bundles_feature[bundles[:, 0]]
+
+        user_view1 = self.build_noise_view(user_anchor)
+        user_view2 = self.build_noise_view(user_anchor)
+        bundle_view1 = self.build_noise_view(bundle_anchor)
+        bundle_view2 = self.build_noise_view(bundle_anchor)
+
+        cl_output = {
+            "user_view1": user_view1,
+            "user_view2": user_view2,
+            "bundle_view1": bundle_view1,
+            "bundle_view2": bundle_view2
+        }
+
+        return main_output, cl_output
 
     def evaluate(self, propagate_result, users):
         users_feature, bundles_feature = propagate_result
@@ -399,6 +437,9 @@ def parse_args():
     parser.add_argument("--dp", type=float, default=0.2, help="the dropout rate")
     parser.add_argument("--alpha", type=int, default=8, help="alpha in UIBloss")
     parser.add_argument("--l2_norm", type=float, default=0.1, help="l2 norm")
+    parser.add_argument("--cl_weight", type=float, default=0.04, help="weight of contrastive loss")
+    parser.add_argument("--cl_temp", type=float, default=0.23, help="temperature of contrastive loss")
+    parser.add_argument("--cl_noise_eps", type=float, default=0.1, help="noise strength for contrastive views")
     return parser.parse_args()
 
 def train(model, epoch, loader, optim, device, loss_func):
@@ -410,23 +451,32 @@ def train(model, epoch, loader, optim, device, loss_func):
     while users is not None:
         i += 1
         optim.zero_grad()
-        modelout = model(users, bundles)
-        loss = loss_func(modelout, batch_size=loader.batch_size)
-        loss.backward()
+        main_output, cl_output = model(users, bundles)
+        main_loss = loss_func(main_output, batch_size=loader.batch_size)
+        
+        u_cl_loss = model.info_nce_loss(cl_output["user_view1"], cl_output["user_view2"])
+        b_cl_loss = model.info_nce_loss(cl_output["bundle_view1"], cl_output["bundle_view2"])
+        cl_loss = (u_cl_loss + b_cl_loss) / 2.0
+        
+        total_loss = main_loss + model.cl_weight * cl_loss
+        total_loss.backward()
         optim.step()
+        
         if i % 20 == 0:
             print(
-                "U-B Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}".format(
+                "U-B Train Epoch: {} [{}/{} ({:.0f}%)]\tMainLoss: {:.6f} CL: {:.6f} Total: {:.6f}".format(
                     epoch,
                     (i + 1) * loader.batch_size,
                     len(loader.dataset),
                     100.0 * (i + 1) / len(loader),
-                    loss,
+                    main_loss.item(),
+                    cl_loss.item(),
+                    total_loss.item(),
                 )
             )
         users, bundles = prefetcher.next()
     print("Train Epoch: {}: time = {:d}s".format(epoch, int(time() - start)))
-    return loss
+    return total_loss
 
 def test(model, loader, device, metrics):
     model.eval()
@@ -523,7 +573,12 @@ def main():
     loss_func = UIBLoss(alpha=args.alpha)
     graph = [ui_graph, bi_graph, ub_graph]
     
-    model = UHBR(graph, device, args.dp, args.l2_norm).to(device)
+    model = UHBR(
+        graph, device, args.dp, args.l2_norm,
+        cl_weight=args.cl_weight,
+        cl_temp=args.cl_temp,
+        cl_noise_eps=args.cl_noise_eps
+    ).to(device)
         
     print("num parameters")
     print(sum(p.numel() for p in model.parameters()))
